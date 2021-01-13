@@ -1,45 +1,41 @@
-use chrono::{DateTime, TimeZone};
+pub mod util;
+pub mod uuid;
+
+use dotenv::dotenv;
 use regex::Regex;
+use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
+use sqlx::pool::Pool;
+use sqlx::MySql;
+use std::env;
 
-pub fn format_datetime<Tz: TimeZone>(datetime: &DateTime<Tz>) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    // The datetime in database is persisted as UTC but is actually in local time. So we reinterpreted it here.
-    let naive_datetime = datetime.naive_utc();
-    chrono_tz::Europe::Berlin
-        .from_local_datetime(&naive_datetime)
-        .unwrap()
-        .to_rfc3339()
-}
+pub async fn create_database_pool() -> Result<Pool<MySql>, sqlx::Error> {
+    dotenv().ok();
 
-pub fn format_alias(prefix: Option<&str>, id: i32, suffix: Option<&str>) -> String {
-    let prefix = prefix
-        .map(|p| format!("/{}", slugify(p)))
-        .unwrap_or_else(|| String::from(""));
-    let suffix = suffix.map(slugify).unwrap_or_else(|| String::from(""));
-    format!("{}/{}/{}", prefix, id, suffix)
-}
+    let database_max_connections: u32 = env::var("DATABASE_MAX_CONNECTIONS")
+        .expect("DATABASE_MAX_CONNECTIONS is not set.")
+        .parse()
+        .unwrap();
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL is not set.");
+    let re = Regex::new(
+        r"^mysql://(?P<username>.+):(?P<password>.+)@(?P<host>.+):(?P<port>\d+)/(?P<database>.+)$",
+    )
+    .unwrap();
+    let captures = re.captures(&database_url).unwrap();
+    let username = captures.name("username").unwrap().as_str();
+    let password = captures.name("password").unwrap().as_str();
+    let host = captures.name("host").unwrap().as_str();
+    let port: u16 = captures.name("port").unwrap().as_str().parse().unwrap();
+    let database = captures.name("database").unwrap().as_str();
 
-fn slugify(segment: &str) -> String {
-    let segment = Regex::new(r#"['"`=+*&^%$#@!<>?]"#)
-        .unwrap()
-        .replace_all(&segment, "");
-    let segment = Regex::new(r"[\[\]{}() ,;:/|\-]+")
-        .unwrap()
-        .replace_all(&segment, "-");
-    String::from(segment.to_lowercase().trim_matches('-'))
-}
-
-#[cfg(test)]
-mod test {
-    use super::slugify;
-
-    #[test]
-    fn format_alias_double_dash() {
-        assert_eq!(
-            slugify("Flächen- und Volumenberechnung mit Integralen"),
-            "flächen-und-volumenberechnung-mit-integralen"
-        )
-    }
+    let options = MySqlConnectOptions::new()
+        .host(host)
+        .port(port)
+        .username(username)
+        .password(password)
+        .database(database)
+        .charset("latin1");
+    MySqlPoolOptions::new()
+        .max_connections(database_max_connections)
+        .connect_with(options)
+        .await
 }
